@@ -1,144 +1,190 @@
+import json
+import time
+
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
-import json
-import re
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.preprocessing import LabelEncoder
+from sklearn.feature_extraction.text import TfidfVectorizer
+import joblib
 
 
 def load_csic_data(file_path):
     df = pd.read_csv(file_path, encoding='latin1')
-    df['full_path'] = df['Method'] + ' ' + df['URL']
-    return df
+    print("CSIC Dataset columns:", df.columns)
+    print("CSIC Dataset sample:", df.head())
+    print("CSIC Dataset info:", df.info())
 
-
-def extract_features(row):
-    features = {}
-    features['path_length'] = len(str(row['URL']))
-    features['num_params'] = str(row['URL']).count('=')
-
-    # Extract the numeric value from the 'Content-Length' header
-    if pd.notna(row['lenght']):
-        content_length = row['lenght'].split(': ')[-1]
-        features['body_length'] = int(content_length) if content_length.isdigit() else 0
+    if 'classification' in df.columns:
+        df['is_attack'] = (df['classification'].astype(str).str.lower() != 'normal').astype(int)
     else:
-        features['body_length'] = 0
+        print("Warning: 'classification' column not found in CSIC dataset")
+        df['is_attack'] = 0
 
-    features['user_agent_length'] = len(str(row['User-Agent'])) if pd.notna(row['User-Agent']) else 0
-    return pd.Series(features)
+    df['http_method'] = df['Method'] if 'Method' in df.columns else 'UNKNOWN'
+    df['path'] = df['URL'] if 'URL' in df.columns else ''
 
-
-def is_suspicious(log):
-    path = log['path']
-
-    # Check for SQL injection attempts
-    if re.search(r'(union|select|from|where)\s+.*\s+(union|select|from|where)', path, re.IGNORECASE):
-        return True
-
-    # Check for path traversal attempts
-    if '..' in path or '%2e%2e' in path.lower():
-        return True
-
-    # Check for obvious script injection
-    if re.search(r'<script.*?>.*?</script>', path, re.IGNORECASE):
-        return True
-
-    # Check for attempts to access sensitive files
-    if re.search(r'/(passwd|shadow|etc/|wp-config\.php)', path, re.IGNORECASE):
-        return True
-
-    # Check for unusual file extensions that might indicate malicious activity
-    if re.search(r'\.(php|asp|aspx|jsp|cgi)$', path, re.IGNORECASE):
-        return True
-
-    return False
+    return df[['http_method', 'path', 'is_attack']]
 
 
-def train_model(X):
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+def load_cidds_data(file_path):
+    df = pd.read_parquet(file_path)
+    print(f"CIDDS Dataset columns ({file_path}):", df.columns)
+    print(f"CIDDS Dataset sample ({file_path}):", df.head())
+    print(f"CIDDS Dataset info ({file_path}):", df.info())
 
-    clf = IsolationForest(contamination=0.1, random_state=42)
-    clf.fit(X_scaled)
+    if 'label' in df.columns:
+        df['is_attack'] = (df['label'].astype(str) != 'normal').astype(int)
+    else:
+        print(f"Warning: 'label' column not found in CIDDS dataset ({file_path})")
+        df['is_attack'] = 0
 
-    return clf, scaler
+    df['http_method'] = 'UNKNOWN'
+    if 'proto' in df.columns and 'label' in df.columns:
+        df['path'] = df['proto'].astype(str) + '://' + df['label'].astype(str)
+    else:
+        print(f"Warning: 'proto' or 'label' column not found in CIDDS dataset ({file_path})")
+        df['path'] = ''
 
-
-def analyze_log(log, clf, scaler):
-    if is_suspicious(log):
-        return 1, 1.0  # Definitely suspicious
-
-    features = extract_features_from_log(log)
-    features_df = pd.DataFrame([features])
-    features_scaled = scaler.transform(features_df)
-
-    # -1 for outliers (potential attacks), 1 for inliers (normal)
-    prediction = clf.predict(features_scaled)[0]
-    score = clf.score_samples(features_scaled)[0]
-
-    # Convert to probability-like score
-    probability = 1 - (score - clf.offset_) / (np.max(clf.score_samples(features_scaled)) - clf.offset_)
-
-    return -1 if prediction == -1 else 0, probability
+    return df[['http_method', 'path', 'is_attack']]
 
 
-def extract_features_from_log(log):
-    features = {}
-    features['path_length'] = len(str(log['path']))
-    features['num_params'] = str(log['path']).count('=')
-    features['body_length'] = len(str(log.get('body', '')))
-    features['user_agent_length'] = len(str(log.get('headers', {}).get('User-Agent', '')))
-    return features
+def load_json_logs(file_path):
+    with open(file_path, 'r') as f:
+        logs = json.load(f)
+    df = pd.DataFrame(logs)
+    df['is_attack'] = 0  # Assuming all logs are non-attacks; you'll predict on these
+    df['http_method'] = df['method'] if 'method' in df.columns else 'UNKNOWN'
+    df['path'] = df['path'] if 'path' in df.columns else ''
+    return df[['http_method', 'path', 'is_attack']]
 
 
-def main(csic_file_path, custom_log_file_path):
-    print("Loading CSIC data...")
-    csic_df = load_csic_data(csic_file_path)
+def combine_datasets(csic_path, cidds_external_path, cidds_openstack_path):
+    print("Loading datasets...")
+    dataframes = []
 
-    print("Extracting features...")
-    features_df = csic_df.apply(extract_features, axis=1)
+    try:
+        csic_df = load_csic_data(csic_path)
+        dataframes.append(csic_df)
+        print(f"CSIC Dataset loaded: {len(csic_df)} samples, {csic_df['is_attack'].sum()} attacks")
+    except Exception as e:
+        print(f"Error loading CSIC data: {e}")
 
-    # Ensure all features are numeric
-    for column in features_df.columns:
-        features_df[column] = pd.to_numeric(features_df[column], errors='coerce')
-    features_df = features_df.fillna(0)
+    for path in [cidds_external_path, cidds_openstack_path]:
+        try:
+            cidds_df = load_cidds_data(path)
+            dataframes.append(cidds_df)
+            print(f"CIDDS Dataset loaded from {path}: {len(cidds_df)} samples, {cidds_df['is_attack'].sum()} attacks")
+        except Exception as e:
+            print(f"Error loading CIDDS data from {path}: {e}")
 
-    print("Training model...")
-    model, scaler = train_model(features_df)
+    if not dataframes:
+        raise ValueError("No data available after attempting to load all datasets.")
 
-    print("Model training complete!")
+    print("Combining datasets...")
+    combined_df = pd.concat(dataframes, ignore_index=True)
 
-    print("Analyzing custom logs...")
-    with open(custom_log_file_path, 'r') as file:
-        logs = json.load(file)
+    print("Combined Dataset statistics:")
+    print(f"Total samples: {len(combined_df)}")
+    print(f"Attack samples: {combined_df['is_attack'].sum()}")
+    print(f"Normal samples: {len(combined_df) - combined_df['is_attack'].sum()}")
 
-    results = []
-    for log in logs:
-        if log['type'] == 'REQUEST':
-            prediction, probability = analyze_log(log, model, scaler)
+    return combined_df
 
-            if prediction != 0:
-                print("\nPotential attack detected. Full log entry:")
-                print(json.dumps(log, indent=2))
-                print(f"Attack probability: {probability:.2f}")
+def preprocess_data(df):
+    le = LabelEncoder()
+    df['http_method'] = le.fit_transform(df['http_method'])
 
-            results.append({
-                'timestamp': log['timestamp'],
-                'method': log['method'],
-                'path': log['path'],
-                'prediction': prediction,
-                'probability': probability
-            })
+    vectorizer = TfidfVectorizer(max_features=1000)
+    path_features = vectorizer.fit_transform(df['path'])
 
-    results_df = pd.DataFrame(results)
-    print("\nAnalysis summary:")
-    print(results_df['prediction'].value_counts())
+    X = np.hstack((df[['http_method']].values, path_features.toarray()))
+    y = df['is_attack'].values
 
-    # Optionally, save the analysis results
-    results_df.to_csv('log_analysis_results.csv', index=False)
+    return X, y, vectorizer
+
+
+def train_model(X, y):
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    print("Training Random Forest model...")
+    n_estimators = 100
+    rf = RandomForestClassifier(n_estimators=n_estimators, random_state=42, n_jobs=-1, verbose=0)
+
+    start_time = time.time()
+
+    # Train the entire forest at once
+    rf.fit(X_train, y_train)
+
+    # Calculate and print the training time
+    total_time = time.time() - start_time
+    print(f"\nTraining completed in {total_time:.2f} seconds")
+    print(f"Average time per tree: {total_time / n_estimators:.2f} seconds")
+
+    print("\nValidating the model...")
+    y_pred = rf.predict(X_val)
+    print("Validation Results:")
+    print(classification_report(y_val, y_pred))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_val, y_pred))
+
+    return rf
+
+def test_on_logs(model, vectorizer, json_path):
+    print("\nTesting model on logs...")
+    logs_df = load_json_logs(json_path)
+
+    le = LabelEncoder()
+    logs_df['http_method'] = le.fit_transform(logs_df['http_method'])
+    path_features = vectorizer.transform(logs_df['path'])
+
+    X_test = np.hstack((logs_df[['http_method']].values, path_features.toarray()))
+
+    predictions = model.predict(X_test)
+    probabilities = model.predict_proba(X_test)[:, 1]
+
+    logs_df['predicted_attack'] = predictions
+    logs_df['attack_probability'] = probabilities
+
+    print("Test Results:")
+    print(f"Total logs: {len(logs_df)}")
+    print(f"Predicted attacks: {sum(predictions)}")
+    print("\nSample of predicted attacks:")
+    print(logs_df[logs_df['predicted_attack'] == 1].head())
+
+    return logs_df
+
+
+def main():
+    csic_path = 'data/csic_database.csv'
+    cidds_external_path = 'data/cidds-001-externalserver.parquet'
+    cidds_openstack_path = 'data/cidds-001-openstack.parquet'
+    logs_path = 'data/logs.json'
+
+    combined_df = combine_datasets(csic_path, cidds_external_path, cidds_openstack_path)
+
+    if len(combined_df) > 0:
+        X, y, vectorizer = preprocess_data(combined_df)
+
+        print("\nStarting model training...")
+        print(f"Total samples: {len(X)}")
+        print(f"Number of features: {X.shape[1]}")
+        print(f"Class distribution: {np.bincount(y)}")
+        print("-" * 50)
+
+        model = train_model(X, y)
+
+    results_df = test_on_logs(model, vectorizer, logs_path)
+    results_df.to_csv('analyzed_logs.csv', index=False)
+    print("\nResults saved to 'analyzed_logs.csv'")
+
+    # Save the model and vectorizer for future use
+    joblib.dump(model, 'ids_model.joblib')
+    joblib.dump(vectorizer, 'ids_vectorizer.joblib')
+    print("Model and vectorizer saved for future use.")
 
 
 if __name__ == "__main__":
-    csic_file_path = 'csic_database.csv'
-    custom_log_file_path = 'logs.json'
-    main(csic_file_path, custom_log_file_path)
+    main()
