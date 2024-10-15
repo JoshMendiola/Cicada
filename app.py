@@ -1,6 +1,8 @@
 import json
+import os
 import time
 
+import boto3
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -10,8 +12,18 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.feature_extraction.text import TfidfVectorizer
 import joblib
 
+from utils.aws import upload_to_s3, download_from_s3
+
+PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+S3_BUCKET_NAME = 'cicada-data'
+s3_client = boto3.client('s3')
+
 
 def load_csic_data(file_path):
+    if not os.path.exists(file_path):
+        s3_path = os.path.basename(file_path)
+        download_from_s3(s3_path, file_path)
+
     df = pd.read_csv(file_path, encoding='latin1')
     print("CSIC Dataset columns:", df.columns)
     print("CSIC Dataset sample:", df.head())
@@ -30,6 +42,10 @@ def load_csic_data(file_path):
 
 
 def load_cidds_data(file_path):
+    if not os.path.exists(file_path):
+        s3_path = os.path.basename(file_path)
+        download_from_s3(s3_path, file_path)
+
     df = pd.read_parquet(file_path)
     print(f"CIDDS Dataset columns ({file_path}):", df.columns)
     print(f"CIDDS Dataset sample ({file_path}):", df.head())
@@ -52,13 +68,59 @@ def load_cidds_data(file_path):
 
 
 def load_json_logs(file_path):
+    if not os.path.exists(file_path):
+        s3_path = os.path.basename(file_path)
+        download_from_s3(s3_path, file_path)
+
     with open(file_path, 'r') as f:
         logs = json.load(f)
     df = pd.DataFrame(logs)
-    df['is_attack'] = 0  # Assuming all logs are non-attacks; you'll predict on these
+
+    # Assume 'is_attack' field exists in logs, if not, provide a default value
+    df['is_attack'] = df.get('is_attack', 0)
+
     df['http_method'] = df['method'] if 'method' in df.columns else 'UNKNOWN'
     df['path'] = df['path'] if 'path' in df.columns else ''
     return df[['http_method', 'path', 'is_attack']]
+
+
+def test_on_logs(model, vectorizer, json_path):
+    print("\nTesting model on logs...")
+    logs_df = load_json_logs(json_path)
+
+    le = LabelEncoder()
+    logs_df['http_method'] = le.fit_transform(logs_df['http_method'])
+    path_features = vectorizer.transform(logs_df['path'])
+
+    X_test = np.hstack((logs_df[['http_method']].values, path_features.toarray()))
+
+    predictions = model.predict(X_test)
+    probabilities = model.predict_proba(X_test)[:, 1]
+
+    logs_df['predicted_attack'] = predictions
+    logs_df['attack_probability'] = probabilities
+
+    print("Test Results:")
+    print(f"Total logs: {len(logs_df)}")
+    print(f"Actual attacks: {logs_df['is_attack'].sum()}")
+    print(f"Predicted attacks: {sum(predictions)}")
+
+    print("\nClassification Report:")
+    print(classification_report(logs_df['is_attack'], predictions))
+
+    print("\nConfusion Matrix:")
+    print(confusion_matrix(logs_df['is_attack'], predictions))
+
+    print("\nSample of correctly predicted attacks:")
+    print(logs_df[(logs_df['is_attack'] == 1) & (logs_df['predicted_attack'] == 1)].head())
+
+    print("\nSample of missed attacks (false negatives):")
+    print(logs_df[(logs_df['is_attack'] == 1) & (logs_df['predicted_attack'] == 0)].head())
+
+    print("\nSample of false positives:")
+    print(logs_df[(logs_df['is_attack'] == 0) & (logs_df['predicted_attack'] == 1)].head())
+
+    return logs_df
 
 
 def combine_datasets(csic_path, cidds_external_path, cidds_openstack_path):
@@ -92,6 +154,7 @@ def combine_datasets(csic_path, cidds_external_path, cidds_openstack_path):
     print(f"Normal samples: {len(combined_df) - combined_df['is_attack'].sum()}")
 
     return combined_df
+
 
 def preprocess_data(df):
     le = LabelEncoder()
@@ -132,36 +195,14 @@ def train_model(X, y):
 
     return rf
 
-def test_on_logs(model, vectorizer, json_path):
-    print("\nTesting model on logs...")
-    logs_df = load_json_logs(json_path)
-
-    le = LabelEncoder()
-    logs_df['http_method'] = le.fit_transform(logs_df['http_method'])
-    path_features = vectorizer.transform(logs_df['path'])
-
-    X_test = np.hstack((logs_df[['http_method']].values, path_features.toarray()))
-
-    predictions = model.predict(X_test)
-    probabilities = model.predict_proba(X_test)[:, 1]
-
-    logs_df['predicted_attack'] = predictions
-    logs_df['attack_probability'] = probabilities
-
-    print("Test Results:")
-    print(f"Total logs: {len(logs_df)}")
-    print(f"Predicted attacks: {sum(predictions)}")
-    print("\nSample of predicted attacks:")
-    print(logs_df[logs_df['predicted_attack'] == 1].head())
-
-    return logs_df
-
 
 def main():
-    csic_path = 'data/csic_database.csv'
-    cidds_external_path = 'data/cidds-001-externalserver.parquet'
-    cidds_openstack_path = 'data/cidds-001-openstack.parquet'
-    logs_path = 'data/logs.json'
+    # Use EC2 instance storage for temporary files
+    PROJECT_ROOT = '/tmp'
+    csic_path = os.path.join(PROJECT_ROOT, 'csic_database.csv')
+    cidds_external_path = os.path.join(PROJECT_ROOT, 'cidds-001-externalserver.parquet')
+    cidds_openstack_path = os.path.join(PROJECT_ROOT, 'cidds-001-openstack.parquet')
+    logs_path = os.path.join(PROJECT_ROOT, 'logs.json')
 
     combined_df = combine_datasets(csic_path, cidds_external_path, cidds_openstack_path)
 
@@ -176,14 +217,20 @@ def main():
 
         model = train_model(X, y)
 
-    results_df = test_on_logs(model, vectorizer, logs_path)
-    results_df.to_csv('analyzed_logs.csv', index=False)
-    print("\nResults saved to 'analyzed_logs.csv'")
+        results_df = test_on_logs(model, vectorizer, logs_path)
+        results_csv_path = os.path.join(PROJECT_ROOT, 'analyzed_logs.csv')
+        results_df.to_csv(results_csv_path, index=False)
+        upload_to_s3(results_csv_path, 'analyzed_logs.csv')
+        print("\nResults saved to S3: analyzed_logs.csv")
 
-    # Save the model and vectorizer for future use
-    joblib.dump(model, 'ids_model.joblib')
-    joblib.dump(vectorizer, 'ids_vectorizer.joblib')
-    print("Model and vectorizer saved for future use.")
+        # Save the model and vectorizer for future use
+        model_path = os.path.join(PROJECT_ROOT, 'ids_model.joblib')
+        vectorizer_path = os.path.join(PROJECT_ROOT, 'ids_vectorizer.joblib')
+        joblib.dump(model, model_path)
+        joblib.dump(vectorizer, vectorizer_path)
+        upload_to_s3(model_path, 'ids_model.joblib')
+        upload_to_s3(vectorizer_path, 'ids_vectorizer.joblib')
+        print("Model and vectorizer saved to S3.")
 
 
 if __name__ == "__main__":

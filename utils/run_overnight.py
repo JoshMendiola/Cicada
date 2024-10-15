@@ -1,26 +1,36 @@
 import subprocess
 import sys
 import time
+import os
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 
 def prevent_sleep():
-    # This function will run caffeinate in the background
     subprocess.Popen(['caffeinate', '-d'])
 
 
 def run_ml_script():
+    sys.path.insert(0, PROJECT_ROOT)
+
     import app
+
+    app.csic_path = os.path.join(PROJECT_ROOT, 'data', 'csic_database.csv')
+    app.cidds_external_path = os.path.join(PROJECT_ROOT, 'data', 'cidds-001-externalserver.parquet')
+    app.cidds_openstack_path = os.path.join(PROJECT_ROOT, 'data', 'cidds-001-openstack.parquet')
+    app.logs_path = os.path.join(PROJECT_ROOT, 'data', 'logs.json')
+
+    # Run your main function
     app.main()
 
 
 def main():
     print("Starting overnight ML task...")
+    print(f"Project root: {PROJECT_ROOT}")
 
-    # Prevent sleep
     prevent_sleep()
 
     try:
-        # Run your ML script
         start_time = time.time()
         run_ml_script()
         end_time = time.time()
@@ -29,7 +39,6 @@ def main():
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
-        # Stop caffeinate
         subprocess.run(['killall', 'caffeinate'])
         print("Sleep prevention disabled. Script execution complete.")
 
