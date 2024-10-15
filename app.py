@@ -12,14 +12,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from utils.aws import upload_to_s3, download_from_s3
 
-PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+PROJECT_ROOT = os.getcwd()
 
 
 def load_csic_data(file_path):
-    if not os.path.exists(file_path):
-        s3_path = os.path.basename(file_path)
-        download_from_s3(s3_path, file_path)
-
     df = pd.read_csv(file_path, encoding='latin1')
     print("CSIC Dataset columns:", df.columns)
     print("CSIC Dataset sample:", df.head())
@@ -38,10 +34,6 @@ def load_csic_data(file_path):
 
 
 def load_cidds_data(file_path):
-    if not os.path.exists(file_path):
-        s3_path = os.path.basename(file_path)
-        download_from_s3(s3_path, file_path)
-
     df = pd.read_parquet(file_path)
     print(f"CIDDS Dataset columns ({file_path}):", df.columns)
     print(f"CIDDS Dataset sample ({file_path}):", df.head())
@@ -64,10 +56,6 @@ def load_cidds_data(file_path):
 
 
 def load_json_logs(file_path):
-    if not os.path.exists(file_path):
-        s3_path = os.path.basename(file_path)
-        download_from_s3(s3_path, file_path)
-
     with open(file_path, 'r') as f:
         logs = json.load(f)
     df = pd.DataFrame(logs)
@@ -193,12 +181,10 @@ def train_model(X, y):
 
 
 def main():
-    # Use EC2 instance storage for temporary files
-    PROJECT_ROOT = '/tmp'
-    csic_path = os.path.join(PROJECT_ROOT, 'csic_database.csv')
-    cidds_external_path = os.path.join(PROJECT_ROOT, 'cidds-001-externalserver.parquet')
-    cidds_openstack_path = os.path.join(PROJECT_ROOT, 'cidds-001-openstack.parquet')
-    logs_path = os.path.join(PROJECT_ROOT, 'logs.json')
+    csic_path = os.path.join(PROJECT_ROOT, 'data', 'csic_database.csv')
+    cidds_external_path = os.path.join(PROJECT_ROOT, 'data', 'cidds-001-externalserver.parquet')
+    cidds_openstack_path = os.path.join(PROJECT_ROOT, 'data', 'cidds-001-openstack.parquet')
+    logs_path = os.path.join(PROJECT_ROOT, 'data', 'logs.json')
 
     combined_df = combine_datasets(csic_path, cidds_external_path, cidds_openstack_path)
 
@@ -214,19 +200,17 @@ def main():
         model = train_model(X, y)
 
         results_df = test_on_logs(model, vectorizer, logs_path)
-        results_csv_path = os.path.join(PROJECT_ROOT, 'analyzed_logs.csv')
+        results_csv_path = os.path.join(PROJECT_ROOT, 'updated_log_analysis_results.csv')
         results_df.to_csv(results_csv_path, index=False)
-        upload_to_s3(results_csv_path, 'analyzed_logs.csv')
-        print("\nResults saved to S3: analyzed_logs.csv")
+        print(f"\nResults saved to: {results_csv_path}")
 
         # Save the model and vectorizer for future use
-        model_path = os.path.join(PROJECT_ROOT, 'ids_model.joblib')
-        vectorizer_path = os.path.join(PROJECT_ROOT, 'ids_vectorizer.joblib')
+        model_path = os.path.join(PROJECT_ROOT, 'model', 'ids_model.joblib')
+        vectorizer_path = os.path.join(PROJECT_ROOT, 'model', 'ids_vectorizer.joblib')
         joblib.dump(model, model_path)
         joblib.dump(vectorizer, vectorizer_path)
-        upload_to_s3(model_path, 'ids_model.joblib')
-        upload_to_s3(vectorizer_path, 'ids_vectorizer.joblib')
-        print("Model and vectorizer saved to S3.")
+        print(f"Model saved to: {model_path}")
+        print(f"Vectorizer saved to: {vectorizer_path}")
 
 
 if __name__ == "__main__":
