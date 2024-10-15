@@ -2,21 +2,17 @@ import json
 import os
 import time
 
-import boto3
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.preprocessing import LabelEncoder
-from sklearn.feature_extraction.text import TfidfVectorizer
 import joblib
-
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 from utils.aws import upload_to_s3, download_from_s3
 
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
-S3_BUCKET_NAME = 'cicada-data'
-s3_client = boto3.client('s3')
 
 
 def load_csic_data(file_path):

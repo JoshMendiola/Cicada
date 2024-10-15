@@ -1,4 +1,4 @@
-from app import s3_client, S3_BUCKET_NAME
+from utils.config import s3_client, S3_BUCKET_NAME
 
 
 def download_from_s3(s3_path, local_path):
