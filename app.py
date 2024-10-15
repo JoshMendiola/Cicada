@@ -71,8 +71,11 @@ def test_on_logs(model, vectorizer, json_path):
     print("\nTesting model on logs...")
     logs_df = load_json_logs(json_path)
 
+    logs_df['path'] = logs_df['path'].fillna('')
+
     le = LabelEncoder()
     logs_df['http_method'] = le.fit_transform(logs_df['http_method'])
+
     path_features = vectorizer.transform(logs_df['path'])
 
     X_test = np.hstack((logs_df[['http_method']].values, path_features.toarray()))
