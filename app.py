@@ -10,7 +10,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from utils.aws import upload_to_s3, download_from_s3
 
 PROJECT_ROOT = os.getcwd()
 
@@ -22,7 +21,7 @@ def load_csic_data(file_path):
     print("CSIC Dataset info:", df.info())
 
     if 'classification' in df.columns:
-        df['is_attack'] = (df['classification'].astype(str).str.lower() != 'normal').astype(int)
+        df['is_attack'] = df['classification'].astype(int)
     else:
         print("Warning: 'classification' column not found in CSIC dataset")
         df['is_attack'] = 0
@@ -153,8 +152,8 @@ def preprocess_data(df):
     return X, y, vectorizer
 
 
-def train_model(X, y):
-    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+def train_model(x, y):
+    X_train, X_val, y_train, y_val = train_test_split(x, y, test_size=0.2, random_state=42)
 
     print("Training Random Forest model...")
     n_estimators = 100
