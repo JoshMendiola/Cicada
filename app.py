@@ -1,12 +1,10 @@
-import logging
 import os
 import joblib
-from sklearn.metrics import classification_report, confusion_matrix
 
 from src.continuous.improvement_loop import continuous_improvement_loop
 from src.data.data_loader import load_json_logs
+from src.models.evaluation import evaluate_model
 from src.models.train import train_improved_model
-from utils.feature_alignment import extract_features_consistent
 
 PROJECT_ROOT = os.getcwd()
 
@@ -36,20 +34,6 @@ def save_model(model, vectorizer, preprocessor, all_feature_names, model_dir):
     joblib.dump(vectorizer, os.path.join(model_dir, 'vectorizer.joblib'))
     joblib.dump(preprocessor, os.path.join(model_dir, 'preprocessor.joblib'))
     print("Model saved successfully.")
-
-
-def evaluate_model(model, data, vectorizer, preprocessor, all_feature_names, onehot):
-    """Evaluate model performance"""
-    print("\nEvaluating model...")
-    X_combined = extract_features_consistent(data, vectorizer, preprocessor, all_feature_names, onehot)
-    logging.debug(f"Evaluation data shape: {X_combined.shape}")
-    y = data['is_attack'].astype(int)
-    y_pred = model.predict(X_combined)
-    print(classification_report(y, y_pred))
-    print("\nConfusion Matrix:")
-    print(confusion_matrix(y, y_pred))
-    return y_pred
-
 
 def main():
     # Setup paths

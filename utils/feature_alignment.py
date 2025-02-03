@@ -1,10 +1,33 @@
-def align_features(X, feature_names, all_feature_names):
-    X_aligned = np.zeros((X.shape[0], len(all_feature_names)))
-    for i, name in enumerate(feature_names):
-        if name in all_feature_names:
-            j = all_feature_names.index(name)
-            X_aligned[:, j] = X[:, i]
-    return X_aligned
+import logging
+
+import numpy as np
+from scipy.sparse import issparse
+
+from src.features.feature_extractor import extract_features
+
+
+def add_endpoint_features(X, data):
+    """Add more sophisticated features"""
+    # Add endpoint-specific features
+    X['is_search_endpoint'] = data['path'].str.contains('/search').astype(int)
+    X['is_login_endpoint'] = data['path'].str.contains('/login').astype(int)
+    X['is_root_endpoint'] = (data['path'] == '/').astype(int)
+
+    # Add complexity metrics
+    X['path_depth'] = data['path'].str.count('/')
+    X['path_length'] = data['path'].str.len()
+
+    # Query analysis
+    X['has_query'] = data['query'].str.len() > 0
+    X['query_param_count'] = data['query'].str.count('&') + 1
+
+    # Additional security-focused features
+    X['has_special_chars'] = data['path'].str.contains('[<>{}()\'"]').astype(int)
+    X['has_sql_keywords'] = data['path'].str.lower().str.contains(
+        'select|insert|update|delete|union|drop'
+    ).astype(int)
+
+    return X
 
 
 def extract_features_consistent(data, vectorizer, preprocessor, all_feature_names, onehot):
@@ -13,6 +36,9 @@ def extract_features_consistent(data, vectorizer, preprocessor, all_feature_name
 
     categorical_columns = ['method']
     numerical_columns = [col for col in X.columns if col not in categorical_columns]
+
+    if onehot is None:
+        onehot = preprocessor.named_transformers_['cat']
 
     X_cat = onehot.transform(X[categorical_columns])
     X_num = preprocessor.named_transformers_['num'].transform(X[numerical_columns])
