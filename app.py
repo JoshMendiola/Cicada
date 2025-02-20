@@ -13,27 +13,31 @@ def train_new_model(logs_path, model_dir):
     """Train a new model from scratch"""
     initial_logs_df = load_json_logs(logs_path)
     print("Training initial model...")
-    model, vectorizer, preprocessor, all_feature_names, onehot = train_improved_model(
+    # Updated to handle all returned values
+    model, vectorizer, preprocessor, all_feature_names, onehot, threshold, metadata = train_improved_model(
         initial_logs_df,
         max_features=48
     )
-    save_model(model, vectorizer, preprocessor, all_feature_names, model_dir)
+    save_model(model, vectorizer, preprocessor, all_feature_names, model_dir, threshold, metadata)
     return model, vectorizer, preprocessor, all_feature_names, onehot, initial_logs_df
 
 
-def save_model(model, vectorizer, preprocessor, all_feature_names, model_dir):
+def save_model(model, vectorizer, preprocessor, all_feature_names, model_dir, threshold, metadata):
     """Save model and its components"""
     print("\nSaving model and components...")
     model_info = {
         'model': model,
         'feature_names': all_feature_names,
         'n_features': len(all_feature_names),
-        'vectorizer_max_features': vectorizer.max_features
+        'vectorizer_max_features': vectorizer.max_features,
+        'threshold': threshold,
+        'metadata': metadata
     }
     joblib.dump(model_info, os.path.join(model_dir, 'model_info.joblib'))
     joblib.dump(vectorizer, os.path.join(model_dir, 'vectorizer.joblib'))
     joblib.dump(preprocessor, os.path.join(model_dir, 'preprocessor.joblib'))
     print("Model saved successfully.")
+
 
 def main():
     # Setup paths

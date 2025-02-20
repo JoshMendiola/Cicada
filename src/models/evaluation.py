@@ -14,11 +14,7 @@ def evaluate_model(model, data, vectorizer, preprocessor, all_feature_names, one
 
     X_combined = extract_features_consistent(data, vectorizer, preprocessor, all_feature_names, onehot)
     y = data['is_attack'].astype(int)
-
-    # Use detailed evaluation
-    method_stats = evaluate_model_detailed(model, X_combined, y, data)
-
-    return method_stats
+    y_pred = model.predict(X_combined)
 
 
 def evaluate_model_detailed(model, X_test, y_test, data_test):

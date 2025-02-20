@@ -81,28 +81,37 @@ def train_improved_model(logs_df, max_features=48):
 
     # Use BorderlineSMOTE for better quality synthetic samples
     b_smote = BorderlineSMOTE(
-        sampling_strategy=0.3,
+        sampling_strategy=0.1,
         random_state=42,
         k_neighbors=5,
         m_neighbors=10
     )
 
-    # Clean up borderline cases with SMOTETomek
-    smote_tomek = SMOTETomek(
-        sampling_strategy=0.3,
-        random_state=42
-    )
-
     # Apply resampling pipeline
-    X_res, y_res = b_smote.fit_resample(X_combined, y)
-    X_resampled, y_resampled = smote_tomek.fit_resample(X_res, y_res)
-    print(f"Class distribution after resampling: {Counter(y_resampled)}")
+    print("Applying BorderlineSMOTE...")
+    X_resampled, y_resampled = b_smote.fit_resample(X_combined, y)
+    print(f"Final class distribution: {Counter(y_resampled)}")
 
     # 3. TRAIN/VALIDATION/TEST SPLIT
     # -----------------------------
-    # Split into three sets for better evaluation
-    X_train, X_temp, y_train, y_temp = train_test_split(X_resampled, y_resampled, test_size=0.3, random_state=42)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+    # First split the original data indices
+    original_indices = np.arange(len(logs_df))
+    train_idx, temp_idx = train_test_split(
+        original_indices,
+        test_size=0.3,
+        random_state=42
+    )
+    val_idx, test_idx = train_test_split(
+        temp_idx,
+        test_size=0.5,
+        random_state=42
+    )
+
+    # Now split the resampled data
+    X_train, X_temp = X_resampled[train_idx], X_resampled[temp_idx]
+    X_val, X_test = X_resampled[val_idx], X_resampled[test_idx]
+    y_train, y_temp = y_resampled[train_idx], y_resampled[temp_idx]
+    y_val, y_test = y_resampled[val_idx], y_resampled[test_idx]
 
     # 4. MODEL TRAINING
     # ---------------
@@ -122,25 +131,67 @@ def train_improved_model(logs_df, max_features=48):
         min_child_weight=2,
         subsample=0.8,
         colsample_bytree=0.8,
-        learning_rate=0.1,
-        early_stopping_rounds=10
+        learning_rate=0.1
     )
 
     # Create and train ensemble model
-    ensemble_model = CalibratedClassifierCV(
-        VotingClassifier(
-            estimators=[
-                ('rf', rf_model),
-                ('xgb', xgb_model)
-            ],
-            voting='soft'
-        ),
-        cv=5
+    voting_classifier = VotingClassifier(
+        estimators=[
+            ('rf', rf_model),
+            ('xgb', xgb_model)
+        ],
+        voting='soft'
     )
 
-    # Train the ensemble
-    print("\nTraining ensemble model...")
-    ensemble_model.fit(X_train, y_train)
+    # Train XGBoost with early stopping using validation set
+    print("\nTraining base models...")
+
+    # Train Random Forest
+    rf_model = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=10,
+        class_weight='balanced',
+        min_samples_split=5,
+        random_state=42
+    )
+    rf_model.fit(X_train, y_train)
+
+    # Train XGBoost with proper parameters
+    xgb_model = xgb.XGBClassifier(
+        eval_metric=['logloss', 'auc'],
+        scale_pos_weight=3,
+        max_depth=6,
+        min_child_weight=2,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        learning_rate=0.1,
+        early_stopping=10
+    )
+
+    xgb_model.fit(
+        X_train, y_train,
+        eval_set=[(X_val, y_val)],
+        verbose=False
+    )
+
+    # Create and train classifier
+    voting_classifier = VotingClassifier(
+        estimators=[
+            ('rf', rf_model),
+            ('xgb', xgb_model)
+        ],
+        voting='soft'
+    )
+
+    voting_classifier.fit(X_train, y_train)
+
+    # Calibrate the ensemble
+    print("\nCalibrating ensemble...")
+    ensemble_model = CalibratedClassifierCV(
+        voting_classifier,
+        cv='prefit'
+    )
+    ensemble_model.fit(X_val, y_val)
 
     # 5. MODEL EVALUATION AND ANALYSIS
     # ------------------------------
@@ -170,35 +221,35 @@ def train_improved_model(logs_df, max_features=48):
     print("Confusion Matrix:")
     print(confusion_matrix(y_test, y_pred))
 
+    base_rf_model = rf_model
+
+    print("\nModel Evaluation (with optimal threshold):")
+    print(classification_report(y_test, y_pred))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+
     # Analyze feature importance (from Random Forest component)
-    rf_model = ensemble_model.estimators_[0].estimators_[0]
-    importances = rf_model.feature_importances_
+    importances = base_rf_model.feature_importances_
     indices = np.argsort(importances)[::-1]
 
     print("\nTop 10 Most Important Features:")
     for f in range(min(10, len(all_feature_names))):
         print(f"{f + 1}. {all_feature_names[indices[f]]} ({importances[indices[f]]:.4f})")
 
-    # Error analysis
-    false_positives = logs_df[(y_test == 0) & (y_pred == 1)]
-    print("\nFalse Positive Analysis:")
-    print("Most common paths in false positives:")
-    print(false_positives['path'].value_counts().head())
-    print("\nMethods in false positives:")
-    print(false_positives['method'].value_counts())
+    # Error analysis using original indices
+    false_positives_mask = (y_test == 0) & (y_pred == 1)
+    false_positive_indices = test_idx[false_positives_mask]
+    false_positives = logs_df.iloc[false_positive_indices[false_positive_indices < len(logs_df)]]
 
-    # Analyze borderline cases
+    # Borderline cases analysis
     borderline_mask = (test_probas[:, 1] > 0.4) & (test_probas[:, 1] < 0.6)
-    borderline_cases = logs_df[borderline_mask]
+    borderline_indices = test_idx[borderline_mask]
+    borderline_indices = borderline_indices[borderline_indices < len(logs_df)]
+    borderline_cases = logs_df.iloc[borderline_indices]
     print("\nBorderline Cases Analysis:")
     print(f"Number of borderline cases: {len(borderline_cases)}")
     print("Methods in borderline cases:")
     print(borderline_cases['method'].value_counts())
-
-    # Cross validation scores
-    cv_scores = cross_val_score(ensemble_model, X_combined, y, cv=5)
-    print(f"\nCross-validation scores: {cv_scores}")
-    print(f"Average CV score: {cv_scores.mean():.3f} (+/- {cv_scores.std() * 2:.3f})")
 
     # Save model metadata
     model_metadata = {
@@ -206,11 +257,18 @@ def train_improved_model(logs_df, max_features=48):
         'optimal_threshold': best_threshold,
         'feature_names': all_feature_names,
         'performance_metrics': {
-            'cv_score_mean': cv_scores.mean(),
-            'cv_score_std': cv_scores.std(),
+            'accuracy': (y_pred == y_test).mean(),
+            'false_positive_rate': (y_pred[y_test == 0] == 1).mean(),
+            'false_negative_rate': (y_pred[y_test == 1] == 0).mean(),
             'best_f1': best_f1
         }
     }
+
+    print("\nFinal Performance Metrics:")
+    print(f"Accuracy: {model_metadata['performance_metrics']['accuracy']:.3f}")
+    print(f"False Positive Rate: {model_metadata['performance_metrics']['false_positive_rate']:.3f}")
+    print(f"False Negative Rate: {model_metadata['performance_metrics']['false_negative_rate']:.3f}")
+    print(f"Best F1 Score: {model_metadata['performance_metrics']['best_f1']:.3f}")
 
     return (ensemble_model, vectorizer, preprocessor, all_feature_names, onehot,
             best_threshold, model_metadata)
